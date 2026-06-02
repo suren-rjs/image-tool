@@ -1,0 +1,15 @@
+{
+  "name": "image-tool",
+  "version": "1.0.0",
+  "description": "CLI and Web tool for image cropping and size reduction",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "open": "^10.1.0",
+    "sharp": "^0.34.5"
+  }
+}

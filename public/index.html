@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OptiCrop // Advanced Image Studio</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Ambient background glow elements -->
+  <div class="glow-orb glow-orb-1"></div>
+  <div class="glow-orb glow-orb-2"></div>
+
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+          <line x1="12" y1="22.08" x2="12" y2="12"></line>
+        </svg>
+        <span class="logo-text">OptiCrop<span class="accent-dot">.</span></span>
+      </div>
+      <div class="status-badge">
+        <span class="pulse-dot"></span>
+        <span class="status-label">Studio Active</span>
+      </div>
+    </header>
+
+    <!-- Upload Stage (Empty State) -->
+    <main class="main-content" id="upload-stage">
+      <div class="upload-card">
+        <div class="drop-zone" id="drop-zone">
+          <input type="file" id="file-input" accept="image/*" class="file-input-hidden">
+          <div class="upload-icon-container">
+            <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+          </div>
+          <h2>Upload your image</h2>
+          <p class="upload-subtitle">Drag and drop your file here, or click to browse</p>
+          <div class="format-badges">
+            <span class="badge">PNG</span>
+            <span class="badge">JPEG</span>
+            <span class="badge">WEBP</span>
+            <span class="badge">GIF</span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Editor Stage (Workspace State) -->
+    <main class="main-content workspace-hidden" id="editor-stage">
+      <div class="workspace-grid">
+        
+        <!-- Interactive Viewport (Left) -->
+        <div class="viewport-card">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <polyline points="21 15 16 10 5 21"></polyline>
+              </svg>
+              Workspace Viewport
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-change-image">
+              Upload New
+            </button>
+          </div>
+          
+          <div class="canvas-wrapper" id="canvas-wrapper">
+            <!-- Custom cropping interactive overlay container -->
+            <div class="editor-container" id="editor-container">
+              <img id="source-image" src="" alt="Source" style="display: none;">
+              <canvas id="editor-canvas"></canvas>
+              
+              <!-- Draggable Crop Overlay -->
+              <div class="crop-overlay" id="crop-overlay" style="display: none;">
+                <!-- Corner Handles -->
+                <div class="crop-handle handle-tl" data-handle="tl"></div>
+                <div class="crop-handle handle-tr" data-handle="tr"></div>
+                <div class="crop-handle handle-bl" data-handle="bl"></div>
+                <div class="crop-handle handle-br" data-handle="br"></div>
+                <!-- Edge Handles -->
+                <div class="crop-handle handle-t" data-handle="t"></div>
+                <div class="crop-handle handle-b" data-handle="b"></div>
+                <div class="crop-handle handle-l" data-handle="l"></div>
+                <div class="crop-handle handle-r" data-handle="r"></div>
+                <!-- Interactive Grid Lines -->
+                <div class="crop-grid-line line-v1"></div>
+                <div class="crop-grid-line line-v2"></div>
+                <div class="crop-grid-line line-h1"></div>
+                <div class="crop-grid-line line-h2"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings Sidebar (Right) -->
+        <aside class="sidebar-card">
+          <div class="sidebar-section">
+            <h3 class="section-title">Image Details</h3>
+            <div class="stats-panel">
+              <div class="stat-item">
+                <span class="stat-label">Original Dim</span>
+                <span class="stat-value" id="info-original-dim">-</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Original Size</span>
+                <span class="stat-value" id="info-original-size">-</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Current Dim</span>
+                <span class="stat-value" id="info-current-dim">-</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Estimated Size</span>
+                <span class="stat-value" id="info-estimated-size">-</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-title-row">
+              <h3 class="section-title">Crop Mode</h3>
+              <button class="btn-text" id="btn-reset-crop">Reset</button>
+            </div>
+            <div class="ratio-selectors">
+              <button class="ratio-btn active" data-ratio="free">Free</button>
+              <button class="ratio-btn" data-ratio="1:1">1:1</button>
+              <button class="ratio-btn" data-ratio="4:3">4:3</button>
+              <button class="ratio-btn" data-ratio="16:9">16:9</button>
+            </div>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-title-row">
+              <h3 class="section-title">Dimensions (Resize)</h3>
+              <label class="toggle-switch">
+                <input type="checkbox" id="lock-ratio" checked>
+                <span class="slider-toggle"></span>
+                <span class="toggle-label">Lock Ratio</span>
+              </label>
+            </div>
+            <div class="dimension-inputs">
+              <div class="input-group">
+                <span class="input-prefix">W</span>
+                <input type="number" id="input-width" min="1">
+                <span class="input-suffix">px</span>
+              </div>
+              <div class="input-group">
+                <span class="input-prefix">H</span>
+                <input type="number" id="input-height" min="1">
+                <span class="input-suffix">px</span>
+              </div>
+            </div>
+            
+            <div class="preset-pills">
+              <button class="preset-pill" data-preset="100">100%</button>
+              <button class="preset-pill" data-preset="75">75%</button>
+              <button class="preset-pill" data-preset="50">50%</button>
+              <button class="preset-pill" data-preset="25">25%</button>
+            </div>
+          </div>
+
+          <div class="sidebar-section">
+            <h3 class="section-title">Format & Quality</h3>
+            <div class="format-selectors">
+              <button class="format-btn active" data-format="image/jpeg">JPEG</button>
+              <button class="format-btn" data-format="image/png">PNG</button>
+              <button class="format-btn" data-format="image/gif">GIF</button>
+              <button class="format-btn" data-format="image/webp">WEBP</button>
+              <button class="format-btn" data-format="image/avif">AVIF</button>
+              <button class="format-btn" data-format="image/tiff">TIFF</button>
+              <button class="format-btn" data-format="image/svg+xml">SVG</button>
+              <button class="format-btn" data-format="image/heic">HEIC</button>
+              <button class="format-btn" data-format="image/jxl">JXL</button>
+            </div>
+            
+            <div class="slider-container" id="quality-section">
+              <div class="slider-header">
+                <span class="slider-label">Compression Quality</span>
+                <span class="slider-value" id="quality-value">80%</span>
+              </div>
+              <input type="range" id="input-quality" class="modern-slider" min="10" max="100" value="80">
+            </div>
+          </div>
+
+          <!-- Optimization Savings Meter -->
+          <div class="sidebar-section savings-section" id="savings-card">
+            <div class="savings-info">
+              <div>
+                <div class="savings-title">Optimized savings</div>
+                <div class="savings-percent" id="savings-percent">0% smaller</div>
+              </div>
+              <div class="savings-gauge-container">
+                <svg viewBox="0 0 36 36" class="circular-chart">
+                  <path class="circle-bg"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                  <path class="circle" id="savings-circle"
+                    stroke-dasharray="0, 100"
+                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                  />
+                  <text x="18" y="20.35" class="percentage" id="savings-gauge-text">0%</text>
+                </svg>
+              </div>
+            </div>
+          </div>
+
+          <!-- Download Trigger -->
+          <button class="btn btn-primary btn-glow" id="btn-download">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Download Processed Image
+          </button>
+        </aside>
+
+      </div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
