@@ -1027,6 +1027,22 @@ bulkFormatBtns.forEach(btn => {
     btn.classList.add('active');
   });
 });
+// Bind bulk actions click listeners
+btnBulkCompress.addEventListener('click', compressAllBulk);
+btnBulkDownload.addEventListener('click', downloadAllAsZip);
+
+document.getElementById('btn-bulk-add-more').addEventListener('click', (e) => {
+  e.stopPropagation();
+  fileInput.click();
+});
+
+document.getElementById('btn-bulk-clear').addEventListener('click', (e) => {
+  e.stopPropagation();
+  bulkQueue = [];
+  document.getElementById('bulk-stage').classList.add('workspace-hidden');
+  uploadStage.classList.remove('workspace-hidden');
+  fileInput.value = '';
+});
 
 // Handle multiple file selection
 function handleMultipleFiles(files) {
@@ -1138,7 +1154,7 @@ function renderQueueTable() {
 
     tr.innerHTML = `
       <td>
-        <img class="queue-thumbnail" src="${thumbSrc}" alt="Preview" onload="URL.revokeObjectURL(this.src)">
+        <img class="queue-thumbnail" src="${thumbSrc}" alt="Preview" onload="window.URL.revokeObjectURL(this.src)">
       </td>
       <td>
         <div class="queue-item-name" title="${item.file.name}">${item.file.name}</div>

@@ -66,14 +66,29 @@ async function compressToTargetSize(buffer, params) {
 
   let basePipeline = sharp(buffer);
 
-  // 1. Crop
+  // 1. Crop (with safe boundary clamping)
   if (cropX !== undefined && cropY !== undefined && cropW !== undefined && cropH !== undefined) {
-    basePipeline = basePipeline.extract({
-      left: Math.round(parseFloat(cropX)),
-      top: Math.round(parseFloat(cropY)),
-      width: Math.round(parseFloat(cropW)),
-      height: Math.round(parseFloat(cropH))
-    });
+    const meta = await basePipeline.metadata();
+    let left = Math.max(0, Math.round(parseFloat(cropX)));
+    let top = Math.max(0, Math.round(parseFloat(cropY)));
+    let cropWidth = Math.round(parseFloat(cropW));
+    let cropHeight = Math.round(parseFloat(cropH));
+
+    if (left + cropWidth > meta.width) {
+      cropWidth = meta.width - left;
+    }
+    if (top + cropHeight > meta.height) {
+      cropHeight = meta.height - top;
+    }
+
+    if (cropWidth > 0 && cropHeight > 0) {
+      basePipeline = basePipeline.extract({
+        left: left,
+        top: top,
+        width: cropWidth,
+        height: cropHeight
+      });
+    }
   }
 
   // 2. Resolve target dimensions
@@ -217,14 +232,29 @@ async function processImage(buffer, params) {
 
   let pipeline = sharp(buffer);
   
-  // 1. Crop
+  // 1. Crop (with safe boundary clamping)
   if (cropX !== undefined && cropY !== undefined && cropW !== undefined && cropH !== undefined) {
-    pipeline = pipeline.extract({
-      left: Math.round(parseFloat(cropX)),
-      top: Math.round(parseFloat(cropY)),
-      width: Math.round(parseFloat(cropW)),
-      height: Math.round(parseFloat(cropH))
-    });
+    const meta = await pipeline.metadata();
+    let left = Math.max(0, Math.round(parseFloat(cropX)));
+    let top = Math.max(0, Math.round(parseFloat(cropY)));
+    let cropWidth = Math.round(parseFloat(cropW));
+    let cropHeight = Math.round(parseFloat(cropH));
+
+    if (left + cropWidth > meta.width) {
+      cropWidth = meta.width - left;
+    }
+    if (top + cropHeight > meta.height) {
+      cropHeight = meta.height - top;
+    }
+
+    if (cropWidth > 0 && cropHeight > 0) {
+      pipeline = pipeline.extract({
+        left: left,
+        top: top,
+        width: cropWidth,
+        height: cropHeight
+      });
+    }
   }
   
   // 2. Resize
@@ -269,6 +299,7 @@ app.post('/api/estimate', async (req, res) => {
     const result = await processImage(imageInfo.buffer, req.body);
     res.json({ success: true, size: result.buffer.length });
   } catch (err) {
+    console.error('Size estimation error:', err);
     res.status(500).json({ error: `Formatting error: ${err.message}` });
   }
 });
@@ -287,6 +318,7 @@ app.post('/api/download', async (req, res) => {
     res.setHeader('Content-Type', result.mime);
     res.send(result.buffer);
   } catch (err) {
+    console.error('Download processing error:', err);
     res.status(500).json({ error: `Failed to download: ${err.message}` });
   }
 });
