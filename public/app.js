@@ -1,5 +1,6 @@
 // State Management
 let originalFile = null;
+let originalFileId = null; // Backend session cache ID
 let img = new Image();
 
 const canvas = document.getElementById('editor-canvas');
@@ -18,9 +19,15 @@ let cropBox = { x: 0, y: 0, w: 0, h: 0 };
 let activeRatio = 'free'; // 'free', '1:1', '4:3', '16:9'
 let ratioValue = null;
 
-// Format & Quality options
+// Compression options
 let activeFormat = 'image/jpeg';
 let activeQuality = 0.8;
+let compressMode = 'target'; // 'target' or 'manual'
+let targetSizeKB = 200;
+
+// Bulk processing state
+let bulkQueue = [];
+let currentEditingQueueIndex = -1;
 
 // Dragging / Resizing State
 let dragStart = { x: 0, y: 0 };
@@ -66,12 +73,35 @@ const savingsCard = document.getElementById('savings-card');
    1. UPLOAD AND INITIALIZATION
    ========================================================================= */
 
-// Setup Click to Browse
-dropZone.addEventListener('click', () => fileInput.click());
+// Setup Click to Browse bindings
+dropZone.addEventListener('click', () => {
+  // If the user clicks the dropzone itself, trigger file browse by default
+  fileInput.click();
+});
+
+document.getElementById('btn-browse-files').addEventListener('click', (e) => {
+  e.stopPropagation();
+  fileInput.click();
+});
+
+document.getElementById('btn-browse-folder').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('folder-input').click();
+});
 
 fileInput.addEventListener('change', (e) => {
-  if (e.target.files && e.target.files[0]) {
-    handleFile(e.target.files[0]);
+  if (e.target.files && e.target.files.length > 0) {
+    if (e.target.files.length === 1) {
+      handleFile(e.target.files[0]);
+    } else {
+      handleMultipleFiles(Array.from(e.target.files));
+    }
+  }
+});
+
+document.getElementById('folder-input').addEventListener('change', (e) => {
+  if (e.target.files && e.target.files.length > 0) {
+    handleMultipleFiles(Array.from(e.target.files));
   }
 });
 
@@ -90,19 +120,69 @@ fileInput.addEventListener('change', (e) => {
   }, false);
 });
 
-dropZone.addEventListener('drop', (e) => {
+dropZone.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  
   const dt = e.dataTransfer;
-  const files = dt.files;
-  if (files && files[0]) {
-    handleFile(files[0]);
+  if (dt.items && dt.items.length > 0) {
+    const files = await getFilesFromDataTransfer(dt);
+    if (files.length === 1) {
+      handleFile(files[0]);
+    } else if (files.length > 1) {
+      handleMultipleFiles(files);
+    }
+  } else if (dt.files && dt.files.length > 0) {
+    const files = Array.from(dt.files);
+    if (files.length === 1) {
+      handleFile(files[0]);
+    } else if (files.length > 1) {
+      handleMultipleFiles(files);
+    }
   }
 });
 
 btnChangeImage.addEventListener('click', () => {
-  uploadStage.classList.remove('workspace-hidden');
-  editorStage.classList.add('workspace-hidden');
-  fileInput.value = '';
-  originalFile = null;
+  if (currentEditingQueueIndex !== -1) {
+    // Save editor settings back to queue item
+    const item = bulkQueue[currentEditingQueueIndex];
+    const exportW = parseInt(inputWidth.value) || 1;
+    const exportH = parseInt(inputHeight.value) || 1;
+
+    const naturalCropX = Math.round(cropBox.x * imgScaleFactor);
+    const naturalCropY = Math.round(cropBox.y * imgScaleFactor);
+    const naturalCropW = Math.round(cropBox.w * imgScaleFactor);
+    const naturalCropH = Math.round(cropBox.h * imgScaleFactor);
+
+    item.params = {
+      compressMode: compressMode,
+      targetSize: targetSizeKB * 1024,
+      format: activeFormat,
+      quality: activeQuality,
+      cropX: naturalCropX,
+      cropY: naturalCropY,
+      cropW: naturalCropW,
+      cropH: naturalCropH,
+      width: exportW,
+      height: exportH
+    };
+
+    item.status = 'queued';
+    currentEditingQueueIndex = -1;
+    btnChangeImage.textContent = 'Upload New';
+
+    editorStage.classList.add('workspace-hidden');
+    document.getElementById('bulk-stage').classList.remove('workspace-hidden');
+
+    renderQueueTable();
+    uploadAndPreprocessQueue();
+  } else {
+    uploadStage.classList.remove('workspace-hidden');
+    editorStage.classList.add('workspace-hidden');
+    fileInput.value = '';
+    originalFile = null;
+    originalFileId = null;
+  }
 });
 
 function handleFile(file) {
@@ -125,6 +205,7 @@ function handleFile(file) {
   })
   .then(data => {
     originalFile = file;
+    originalFileId = data.id;
     infoOriginalSize.textContent = formatBytes(file.size);
 
     const reader = new FileReader();
@@ -136,12 +217,19 @@ function handleFile(file) {
         infoOriginalDim.textContent = `${img.naturalWidth} × ${img.naturalHeight} px`;
         
         // Match buttons in sidebar
-        const standardTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/tiff', 'image/svg+xml', 'image/heic', 'image/jxl'];
+        const standardTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/avif', 'image/tiff'];
         if (standardTypes.includes(file.type)) {
           setExportFormat(file.type);
         } else {
           setExportFormat('image/jpeg');
         }
+
+        // Default to target size compression mode
+        document.getElementById('single-mode-target').checked = true;
+        compressMode = 'target';
+        targetSizeKB = 200;
+        document.getElementById('input-target-size').value = 200;
+        updateSingleModeUI();
 
         initWorkspace();
       };
@@ -599,6 +687,39 @@ presetPills.forEach(pill => {
    5. FORMAT & QUALITY SELECTION
    ========================================================================= */
 
+// Single editor mode switcher bindings
+const singleModeTarget = document.getElementById('single-mode-target');
+const singleModeManual = document.getElementById('single-mode-manual');
+const singleTargetSizeSection = document.getElementById('single-target-size-section');
+const inputTargetSize = document.getElementById('input-target-size');
+
+function updateSingleModeUI() {
+  if (singleModeTarget.checked) {
+    compressMode = 'target';
+    singleTargetSizeSection.classList.remove('hidden');
+    qualitySection.classList.add('hidden');
+  } else {
+    compressMode = 'manual';
+    singleTargetSizeSection.classList.add('hidden');
+    qualitySection.classList.remove('hidden');
+  }
+}
+
+singleModeTarget.addEventListener('change', () => {
+  updateSingleModeUI();
+  triggerSavingsRecalculation();
+});
+
+singleModeManual.addEventListener('change', () => {
+  updateSingleModeUI();
+  triggerSavingsRecalculation();
+});
+
+inputTargetSize.addEventListener('input', () => {
+  targetSizeKB = parseInt(inputTargetSize.value) || 200;
+  triggerSavingsRecalculation();
+});
+
 formatBtns.forEach(btn => {
   btn.addEventListener('click', () => {
     formatBtns.forEach(b => b.classList.remove('active'));
@@ -610,8 +731,8 @@ formatBtns.forEach(btn => {
 function setExportFormat(format) {
   activeFormat = format;
 
-  // JPEG, WEBP, AVIF, TIFF, HEIC, and JXL support quality parameters
-  const supportsQuality = ['image/jpeg', 'image/webp', 'image/avif', 'image/tiff', 'image/heic', 'image/jxl'].includes(format);
+  // JPEG, WEBP, AVIF, and TIFF support quality parameters
+  const supportsQuality = ['image/jpeg', 'image/webp', 'image/avif', 'image/tiff'].includes(format);
   if (supportsQuality) {
     qualitySection.classList.remove('hidden');
   } else {
@@ -644,7 +765,7 @@ function triggerSavingsRecalculation() {
 }
 
 function calculateSavings() {
-  if (!originalFile || !img.naturalWidth) return;
+  if (!originalFile || !img.naturalWidth || !originalFileId) return;
 
   // Show visual loading indicators
   savingsCard.classList.add('processing');
@@ -660,6 +781,7 @@ function calculateSavings() {
   const naturalCropH = Math.round(cropBox.h * imgScaleFactor);
 
   const payload = {
+    id: originalFileId,
     cropX: naturalCropX,
     cropY: naturalCropY,
     cropW: naturalCropW,
@@ -667,7 +789,9 @@ function calculateSavings() {
     width: exportW,
     height: exportH,
     format: activeFormat,
-    quality: activeQuality
+    quality: activeQuality,
+    compressMode: compressMode,
+    targetSize: targetSizeKB * 1024
   };
 
   fetch('/api/estimate', {
@@ -711,7 +835,7 @@ function calculateSavings() {
    ========================================================================= */
 
 btnDownload.addEventListener('click', () => {
-  if (!originalFile || !img.naturalWidth) return;
+  if (!originalFile || !img.naturalWidth || !originalFileId) return;
 
   const exportW = parseInt(inputWidth.value) || 1;
   const exportH = parseInt(inputHeight.value) || 1;
@@ -722,6 +846,7 @@ btnDownload.addEventListener('click', () => {
   const naturalCropH = Math.round(cropBox.h * imgScaleFactor);
 
   const payload = {
+    id: originalFileId,
     cropX: naturalCropX,
     cropY: naturalCropY,
     cropW: naturalCropW,
@@ -729,7 +854,9 @@ btnDownload.addEventListener('click', () => {
     width: exportW,
     height: exportH,
     format: activeFormat,
-    quality: activeQuality
+    quality: activeQuality,
+    compressMode: compressMode,
+    targetSize: targetSizeKB * 1024
   };
 
   // Visual feedback: change button state to processing
@@ -768,9 +895,6 @@ btnDownload.addEventListener('click', () => {
     else if (activeFormat === 'image/webp') ext = 'webp';
     else if (activeFormat === 'image/avif') ext = 'avif';
     else if (activeFormat === 'image/tiff') ext = 'tiff';
-    else if (activeFormat === 'image/svg+xml') ext = 'svg';
-    else if (activeFormat === 'image/heic') ext = 'heic';
-    else if (activeFormat === 'image/jxl') ext = 'jxl';
 
     const originalName = originalFile.name.substring(0, originalFile.name.lastIndexOf('.'));
     link.download = `${originalName}_edited.${ext}`;
@@ -793,7 +917,7 @@ btnDownload.addEventListener('click', () => {
 });
 
 /* =========================================================================
-   8. UTILITIES
+   8. UTILITIES & BULK COMPRESSION QUEUE ENGINE
    ========================================================================= */
 
 function formatBytes(bytes) {
@@ -803,3 +927,459 @@ function formatBytes(bytes) {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
+
+// Read folder files recursively
+async function getFilesFromDataTransfer(dataTransfer) {
+  const files = [];
+  const items = Array.from(dataTransfer.items);
+  const queue = [];
+
+  for (const item of items) {
+    if (item.kind === 'file') {
+      const entry = item.webkitGetAsEntry();
+      if (entry) {
+        queue.push(entry);
+      }
+    }
+  }
+
+  while (queue.length > 0) {
+    const entry = queue.shift();
+    if (entry.isFile) {
+      const file = await getFileFromEntry(entry);
+      if (file) {
+        files.push(file);
+      }
+    } else if (entry.isDirectory) {
+      const dirReader = entry.createReader();
+      const entries = await readAllEntries(dirReader);
+      queue.push(...entries);
+    }
+  }
+  return files;
+}
+
+function getFileFromEntry(entry) {
+  return new Promise((resolve) => {
+    entry.file(resolve, () => resolve(null));
+  });
+}
+
+function readAllEntries(dirReader) {
+  return new Promise((resolve) => {
+    const allEntries = [];
+    function readNext() {
+      dirReader.readEntries((entries) => {
+        if (entries.length === 0) {
+          resolve(allEntries);
+        } else {
+          allEntries.push(...entries);
+          readNext();
+        }
+      }, () => resolve(allEntries));
+    }
+    readNext();
+  });
+}
+
+// Bulk Queue State & Event listeners
+const bulkModeTarget = document.getElementById('bulk-mode-target');
+const bulkModeManual = document.getElementById('bulk-mode-manual');
+const bulkTargetSizeSection = document.getElementById('bulk-target-size-section');
+const bulkQualitySection = document.getElementById('bulk-quality-section');
+const bulkInputQuality = document.getElementById('bulk-input-quality');
+const bulkQualityValue = document.getElementById('bulk-quality-value');
+const bulkFormatSelectors = document.getElementById('bulk-format-selectors');
+const bulkResizeToggle = document.getElementById('bulk-resize-toggle');
+const bulkResizeDimensions = document.getElementById('bulk-resize-dimensions');
+const btnBulkCompress = document.getElementById('btn-bulk-compress');
+const btnBulkDownload = document.getElementById('btn-bulk-download');
+
+function updateBulkModeUI() {
+  if (bulkModeTarget.checked) {
+    bulkTargetSizeSection.classList.remove('hidden');
+    bulkQualitySection.classList.add('hidden');
+  } else {
+    bulkTargetSizeSection.classList.add('hidden');
+    bulkQualitySection.classList.remove('hidden');
+  }
+}
+
+bulkModeTarget.addEventListener('change', updateBulkModeUI);
+bulkModeManual.addEventListener('change', updateBulkModeUI);
+
+bulkInputQuality.addEventListener('input', () => {
+  bulkQualityValue.textContent = `${bulkInputQuality.value}%`;
+});
+
+bulkResizeToggle.addEventListener('change', () => {
+  if (bulkResizeToggle.checked) {
+    bulkResizeDimensions.classList.remove('hidden');
+  } else {
+    bulkResizeDimensions.classList.add('hidden');
+  }
+});
+
+const bulkFormatBtns = bulkFormatSelectors.querySelectorAll('.format-btn');
+bulkFormatBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    bulkFormatBtns.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  });
+});
+
+// Handle multiple file selection
+function handleMultipleFiles(files) {
+  const imageFiles = files.filter(f => f.type.startsWith('image/'));
+  if (imageFiles.length === 0) {
+    alert('No image files found.');
+    return;
+  }
+  
+  imageFiles.forEach(file => {
+    const exists = bulkQueue.some(q => q.file.name === file.name && q.file.size === file.size);
+    if (!exists) {
+      bulkQueue.push({
+        id: null,
+        file: file,
+        status: 'queued',
+        originalSize: file.size,
+        compressedSize: null,
+        blob: null,
+        resolvedFormat: null,
+        params: {
+          compressMode: 'target',
+          targetSize: 204800, // Default 200KB
+          format: 'original'
+        }
+      });
+    }
+  });
+
+  uploadStage.classList.add('workspace-hidden');
+  editorStage.classList.add('workspace-hidden');
+  document.getElementById('bulk-stage').classList.remove('workspace-hidden');
+
+  renderQueueTable();
+  uploadAndPreprocessQueue();
+}
+
+async function uploadAndPreprocessQueue() {
+  for (let i = 0; i < bulkQueue.length; i++) {
+    const item = bulkQueue[i];
+    if (item.id && item.status !== 'queued') continue;
+
+    item.status = 'processing';
+    renderQueueTable();
+
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': item.file.type
+        },
+        body: item.file
+      });
+      if (!res.ok) throw new Error('Upload failed');
+      const data = await res.json();
+      item.id = data.id;
+      item.status = 'ready';
+    } catch (e) {
+      item.status = 'error';
+    }
+    renderQueueTable();
+  }
+}
+
+function renderQueueTable() {
+  const tbody = document.getElementById('queue-tbody');
+  tbody.innerHTML = '';
+  document.getElementById('bulk-queue-count').textContent = bulkQueue.length;
+
+  bulkQueue.forEach((item, index) => {
+    const tr = document.createElement('tr');
+    
+    let statusClass = 'status-queued';
+    let statusText = 'Ready';
+    
+    if (item.status === 'processing') {
+      statusClass = 'status-processing';
+      statusText = 'Compressing...';
+    } else if (item.status === 'queued') {
+      statusClass = 'status-queued';
+      statusText = 'Queued';
+    } else if (item.status === 'done') {
+      statusClass = 'status-done';
+      statusText = 'Optimized';
+    } else if (item.status === 'error') {
+      statusClass = 'status-error';
+      statusText = 'Failed';
+    }
+
+    const origSizeFormatted = formatBytes(item.file.size);
+    const compSizeFormatted = item.compressedSize ? formatBytes(item.compressedSize) : '-';
+
+    let targetOutputText = '';
+    if (item.status === 'done' && item.compressedSize) {
+      const savings = Math.max(0, Math.round((1 - item.compressedSize / item.file.size) * 100));
+      targetOutputText = `${compSizeFormatted} <span style="color: var(--success); font-size: 0.8rem; margin-left: 4px;">(-${savings}%)</span>`;
+    } else {
+      const mode = item.params.compressMode || (bulkModeTarget.checked ? 'target' : 'manual');
+      if (mode === 'target') {
+        const targetVal = item.params.targetSize ? Math.round(item.params.targetSize / 1024) : document.getElementById('bulk-input-target-size').value;
+        targetOutputText = `Target: ${targetVal} KB`;
+      } else {
+        const qualVal = item.params.quality ? Math.round(item.params.quality * 100) : bulkInputQuality.value;
+        targetOutputText = `Quality: ${qualVal}%`;
+      }
+    }
+
+    const thumbSrc = URL.createObjectURL(item.file);
+
+    tr.innerHTML = `
+      <td>
+        <img class="queue-thumbnail" src="${thumbSrc}" alt="Preview" onload="URL.revokeObjectURL(this.src)">
+      </td>
+      <td>
+        <div class="queue-item-name" title="${item.file.name}">${item.file.name}</div>
+      </td>
+      <td class="queue-item-size">${origSizeFormatted}</td>
+      <td>
+        <span class="status-badge-inline ${statusClass}">${statusText}</span>
+      </td>
+      <td class="queue-item-size">${targetOutputText}</td>
+      <td>
+        <div class="action-buttons">
+          <button class="btn btn-secondary btn-sm" onclick="editQueueItem(${index})">Edit</button>
+          <button class="btn btn-secondary btn-sm" onclick="downloadQueueItem(${index})" ${item.status !== 'done' ? 'disabled' : ''}>Download</button>
+          <button class="btn btn-secondary btn-sm btn-danger-hover" onclick="removeQueueItem(${index})">Remove</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function getImageDimensions(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const tempImg = new Image();
+    tempImg.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: tempImg.naturalWidth, height: tempImg.naturalHeight });
+    };
+    tempImg.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve({ width: 0, height: 0 });
+    };
+    tempImg.src = url;
+  });
+}
+
+async function compressAllBulk() {
+  const globalMode = bulkModeTarget.checked ? 'target' : 'manual';
+  const globalTargetSize = parseInt(document.getElementById('bulk-input-target-size').value) * 1024;
+  const globalQuality = parseInt(bulkInputQuality.value) / 100;
+  const globalFormat = bulkFormatSelectors.querySelector('.format-btn.active').dataset.format;
+  const globalResizeEnabled = bulkResizeToggle.checked;
+  const globalMaxWidth = parseInt(document.getElementById('bulk-input-max-width').value) || 1920;
+  const globalMaxHeight = parseInt(document.getElementById('bulk-input-max-height').value) || 1080;
+
+  const originalHtml = btnBulkCompress.innerHTML;
+  btnBulkCompress.disabled = true;
+  btnBulkCompress.innerHTML = `
+    <svg class="animate-spin" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" style="animation: spin 1s linear infinite; margin-right: 8px; display: inline-block;">
+      <circle cx="12" cy="12" r="10" stroke-dasharray="31.4" stroke-dashoffset="15"></circle>
+    </svg>
+    Compressing...
+  `;
+
+  for (let i = 0; i < bulkQueue.length; i++) {
+    const item = bulkQueue[i];
+    if (!item.id || item.status === 'error') continue;
+
+    item.status = 'processing';
+    renderQueueTable();
+
+    try {
+      const payload = {
+        id: item.id,
+        compressMode: item.params.compressMode || globalMode,
+        targetSize: item.params.targetSize || globalTargetSize,
+        format: (item.params.format && item.params.format !== 'original') ? item.params.format : (globalFormat === 'original' ? item.file.type : globalFormat),
+        quality: item.params.quality || globalQuality
+      };
+
+      // Custom crop values from manual editing
+      if (item.params.cropX !== undefined) {
+        payload.cropX = item.params.cropX;
+        payload.cropY = item.params.cropY;
+        payload.cropW = item.params.cropW;
+        payload.cropH = item.params.cropH;
+        payload.width = item.params.width;
+        payload.height = item.params.height;
+      } else if (globalResizeEnabled) {
+        const dims = await getImageDimensions(item.file);
+        let targetW = dims.width;
+        let targetH = dims.height;
+        const ratio = targetW / targetH;
+
+        if (targetW > globalMaxWidth) {
+          targetW = globalMaxWidth;
+          targetH = Math.round(targetW / ratio);
+        }
+        if (targetH > globalMaxHeight) {
+          targetH = globalMaxHeight;
+          targetW = Math.round(targetH * ratio);
+        }
+
+        payload.width = targetW;
+        payload.height = targetH;
+      }
+
+      const res = await fetch('/api/download', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) throw new Error('Compression failed');
+      const blob = await res.blob();
+      item.blob = blob;
+      item.compressedSize = blob.size;
+      item.status = 'done';
+      item.resolvedFormat = payload.format;
+    } catch (e) {
+      item.status = 'error';
+    }
+    renderQueueTable();
+  }
+
+  btnBulkCompress.disabled = false;
+  btnBulkCompress.innerHTML = originalHtml;
+
+  const anyDone = bulkQueue.some(q => q.status === 'done');
+  btnBulkDownload.disabled = !anyDone;
+}
+
+async function downloadAllAsZip() {
+  const originalHtml = btnBulkDownload.innerHTML;
+  btnBulkDownload.disabled = true;
+  btnBulkDownload.innerHTML = 'Generating ZIP...';
+
+  try {
+    const zip = new JSZip();
+    
+    bulkQueue.forEach(item => {
+      if (item.status === 'done' && item.blob) {
+        let ext = 'jpg';
+        const format = item.resolvedFormat || item.file.type;
+        if (format === 'image/png') ext = 'png';
+        else if (format === 'image/gif') ext = 'gif';
+        else if (format === 'image/webp') ext = 'webp';
+        else if (format === 'image/avif') ext = 'avif';
+        else if (format === 'image/tiff') ext = 'tiff';
+
+        const originalName = item.file.name.substring(0, item.file.name.lastIndexOf('.'));
+        zip.file(`${originalName}_optimized.${ext}`, item.blob);
+      }
+    });
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(zipBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `opti_crop_bulk_images.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('ZIP generation failed: ' + e.message);
+  } finally {
+    btnBulkDownload.disabled = false;
+    btnBulkDownload.innerHTML = originalHtml;
+  }
+}
+
+// Global hook references for onclick handlers
+window.editQueueItem = (index) => {
+  const item = bulkQueue[index];
+  currentEditingQueueIndex = index;
+
+  originalFile = item.file;
+  originalFileId = item.id;
+  infoOriginalSize.textContent = formatBytes(item.file.size);
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    img = new Image();
+    img.onload = () => {
+      document.getElementById('bulk-stage').classList.add('workspace-hidden');
+      editorStage.classList.remove('workspace-hidden');
+      infoOriginalDim.textContent = `${img.naturalWidth} × ${img.naturalHeight} px`;
+
+      // Match editor parameters
+      if (item.params.compressMode === 'target') {
+        singleModeTarget.checked = true;
+        compressMode = 'target';
+        targetSizeKB = Math.round(item.params.targetSize / 1024) || 200;
+        inputTargetSize.value = targetSizeKB;
+      } else {
+        singleModeManual.checked = true;
+        compressMode = 'manual';
+        activeQuality = item.params.quality || 0.8;
+        inputQuality.value = Math.round(activeQuality * 100);
+        qualityValueLabel.textContent = `${inputQuality.value}%`;
+      }
+      updateSingleModeUI();
+
+      if (item.params.format && item.params.format !== 'original') {
+        setExportFormat(item.params.format);
+      } else {
+        setExportFormat(item.file.type);
+      }
+
+      btnChangeImage.textContent = '← Save & Return';
+      initWorkspace();
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(item.file);
+};
+
+window.downloadQueueItem = (index) => {
+  const item = bulkQueue[index];
+  if (item.status === 'done' && item.blob) {
+    let ext = 'jpg';
+    const format = item.resolvedFormat || item.file.type;
+    if (format === 'image/png') ext = 'png';
+    else if (format === 'image/gif') ext = 'gif';
+    else if (format === 'image/webp') ext = 'webp';
+    else if (format === 'image/avif') ext = 'avif';
+    else if (format === 'image/tiff') ext = 'tiff';
+
+    const originalName = item.file.name.substring(0, item.file.name.lastIndexOf('.'));
+    const url = URL.createObjectURL(item.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${originalName}_optimized.${ext}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  } else {
+    alert('Please compress the queue item first.');
+  }
+};
+
+window.removeQueueItem = (index) => {
+  bulkQueue.splice(index, 1);
+  renderQueueTable();
+  if (bulkQueue.length === 0) {
+    document.getElementById('bulk-stage').classList.add('workspace-hidden');
+    uploadStage.classList.remove('workspace-hidden');
+  }
+};

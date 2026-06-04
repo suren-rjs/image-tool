@@ -17,7 +17,32 @@ app.use(express.json());
 // Serve static files from the public folder
 app.use(express.static(path.join(__dirname, 'public')));
 
-// In-memory single-session image cache
+// Multi-session in-memory image cache
+const imageCache = new Map();
+
+function addToCache(buffer, mime) {
+  const id = Math.random().toString(36).substring(2, 15);
+  imageCache.set(id, { buffer, mime, timestamp: Date.now() });
+
+  // Prevent memory leaks: prune cache if it exceeds 100 items
+  if (imageCache.size > 100) {
+    const sorted = [...imageCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+    // Delete the oldest 50 items
+    for (let i = 0; i < 50; i++) {
+      imageCache.delete(sorted[i][0]);
+    }
+  }
+  return id;
+}
+
+function getImageFromCache(id) {
+  if (id && imageCache.has(id)) {
+    return imageCache.get(id);
+  }
+  return { buffer: currentImageBuffer, mime: currentImageMime };
+}
+
+// In-memory single-session image cache (legacy fallback)
 let currentImageBuffer = null;
 let currentImageMime = '';
 
@@ -28,29 +53,188 @@ app.post('/api/upload', express.raw({ type: 'image/*', limit: '100mb' }), (req, 
   }
   currentImageBuffer = req.body;
   currentImageMime = req.headers['content-type'] || 'image/jpeg';
-  res.json({ success: true, size: currentImageBuffer.length });
+  
+  const id = addToCache(currentImageBuffer, currentImageMime);
+  res.json({ success: true, id, size: currentImageBuffer.length });
 });
+
+// Helper function to compress image to a specific target file size (for websites, e.g. 200kb)
+async function compressToTargetSize(buffer, params) {
+  const { cropX, cropY, cropW, cropH, width, height, format, targetSize } = params;
+  const targetBytes = parseInt(targetSize) || 204800; // Default to 200KB (204800 bytes)
+  const mimeType = format || 'image/jpeg';
+
+  let basePipeline = sharp(buffer);
+
+  // 1. Crop
+  if (cropX !== undefined && cropY !== undefined && cropW !== undefined && cropH !== undefined) {
+    basePipeline = basePipeline.extract({
+      left: Math.round(parseFloat(cropX)),
+      top: Math.round(parseFloat(cropY)),
+      width: Math.round(parseFloat(cropW)),
+      height: Math.round(parseFloat(cropH))
+    });
+  }
+
+  // 2. Resolve target dimensions
+  let targetW = width ? Math.round(parseInt(width)) : null;
+  let targetH = height ? Math.round(parseInt(height)) : null;
+
+  if (!targetW || !targetH) {
+    const meta = await basePipeline.metadata();
+    targetW = targetW || meta.width;
+    targetH = targetH || meta.height;
+  }
+
+  basePipeline = basePipeline.resize(targetW, targetH, { fit: 'fill' });
+
+  // Generate intermediate buffer for fast iterative checks
+  const baseBuffer = await basePipeline.toBuffer();
+  const formatName = mimeType.split('/')[1].replace('+xml', '');
+  const supportsQuality = ['image/jpeg', 'image/webp', 'image/avif', 'image/tiff'].includes(mimeType);
+
+  // Helper function to encode sharp pipeline
+  const encodeQuality = async (buf, q) => {
+    const p = sharp(buf);
+    switch (mimeType) {
+      case 'image/webp':
+        return p.webp({ quality: q }).toBuffer();
+      case 'image/avif':
+        return p.avif({ quality: q }).toBuffer();
+      case 'image/tiff':
+        return p.tiff({ quality: q }).toBuffer();
+      case 'image/jpeg':
+      default:
+        return p.jpeg({ quality: q }).toBuffer();
+    }
+  };
+
+  if (!supportsQuality) {
+    // Lossless formats (PNG, GIF) or SVG. Check if standard conversion fits.
+    let resultBuffer = await sharp(baseBuffer).toFormat(formatName).toBuffer();
+    if (resultBuffer.length <= targetBytes) {
+      return { buffer: resultBuffer, mime: mimeType };
+    }
+
+    // Downscale dimension iteratively if it exceeds the limit
+    let scale = 0.9;
+    let iterations = 0;
+    while (resultBuffer.length > targetBytes && scale > 0.1 && iterations < 8) {
+      const w = Math.max(1, Math.round(targetW * scale));
+      const h = Math.max(1, Math.round(targetH * scale));
+      resultBuffer = await sharp(baseBuffer)
+        .resize(w, h, { fit: 'fill' })
+        .toFormat(formatName)
+        .toBuffer();
+      scale -= 0.1;
+      iterations++;
+    }
+    return { buffer: resultBuffer, mime: mimeType };
+  }
+
+  // Binary search quality parameter to get as close to target size as possible
+  let minQ = 10;
+  let maxQ = 95;
+  let bestQ = 80;
+  let bestBuffer = null;
+  let iterations = 0;
+
+  while (minQ <= maxQ && iterations < 7) {
+    const midQ = Math.floor((minQ + maxQ) / 2);
+    try {
+      const tempBuffer = await encodeQuality(baseBuffer, midQ);
+      if (tempBuffer.length <= targetBytes) {
+        bestQ = midQ;
+        bestBuffer = tempBuffer;
+        minQ = midQ + 1; // Try to maximize quality
+      } else {
+        maxQ = midQ - 1; // Too big, decrease quality
+        if (!bestBuffer || tempBuffer.length < bestBuffer.length) {
+          bestBuffer = tempBuffer;
+        }
+      }
+    } catch (e) {
+      break;
+    }
+    iterations++;
+  }
+
+  if (!bestBuffer) {
+    bestBuffer = await encodeQuality(baseBuffer, 80);
+  }
+
+  // If even quality 10 exceeds target size, we must downscale dimensions
+  if (bestBuffer.length > targetBytes) {
+    let scale = 0.9;
+    let scaleIterations = 0;
+    while (bestBuffer.length > targetBytes && scale > 0.1 && scaleIterations < 8) {
+      const w = Math.max(1, Math.round(targetW * scale));
+      const h = Math.max(1, Math.round(targetH * scale));
+      const scaledBase = await sharp(baseBuffer).resize(w, h, { fit: 'fill' }).toBuffer();
+
+      let sMinQ = 10;
+      let sMaxQ = 75;
+      let sBuffer = null;
+      let sIterations = 0;
+
+      while (sMinQ <= sMaxQ && sIterations < 5) {
+        const midQ = Math.floor((sMinQ + sMaxQ) / 2);
+        try {
+          const tempB = await encodeQuality(scaledBase, midQ);
+          if (tempB.length <= targetBytes) {
+            sBuffer = tempB;
+            sMinQ = midQ + 1;
+          } else {
+            sMaxQ = midQ - 1;
+            if (!sBuffer || tempB.length < sBuffer.length) {
+              sBuffer = tempB;
+            }
+          }
+        } catch (e) {
+          break;
+        }
+        sIterations++;
+      }
+
+      if (sBuffer) {
+        bestBuffer = sBuffer;
+      }
+      scale -= 0.1;
+      scaleIterations++;
+    }
+  }
+
+  return { buffer: bestBuffer, mime: mimeType };
+}
 
 // Helper function to process the image via Sharp
 async function processImage(buffer, params) {
-  const { cropX, cropY, cropW, cropH, width, height, format, quality } = params;
+  const { cropX, cropY, cropW, cropH, width, height, format, quality, compressMode, targetSize } = params;
   
+  if (compressMode === 'target') {
+    return compressToTargetSize(buffer, params);
+  }
+
   let pipeline = sharp(buffer);
   
   // 1. Crop
-  pipeline = pipeline.extract({
-    left: Math.round(parseFloat(cropX)),
-    top: Math.round(parseFloat(cropY)),
-    width: Math.round(parseFloat(cropW)),
-    height: Math.round(parseFloat(cropH))
-  });
+  if (cropX !== undefined && cropY !== undefined && cropW !== undefined && cropH !== undefined) {
+    pipeline = pipeline.extract({
+      left: Math.round(parseFloat(cropX)),
+      top: Math.round(parseFloat(cropY)),
+      width: Math.round(parseFloat(cropW)),
+      height: Math.round(parseFloat(cropH))
+    });
+  }
   
   // 2. Resize
-  pipeline = pipeline.resize(
-    Math.round(parseInt(width)),
-    Math.round(parseInt(height)),
-    { fit: 'fill' }
-  );
+  if (width && height) {
+    pipeline = pipeline.resize(
+      Math.round(parseInt(width)),
+      Math.round(parseInt(height)),
+      { fit: 'fill' }
+    );
+  }
   
   // 3. Format & Quality conversion
   const q = Math.round(parseFloat(quality) * 100) || 80;
@@ -66,24 +250,6 @@ async function processImage(buffer, params) {
       return { buffer: await pipeline.avif({ quality: q }).toBuffer(), mime: 'image/avif' };
     case 'image/tiff':
       return { buffer: await pipeline.tiff({ quality: q }).toBuffer(), mime: 'image/tiff' };
-    case 'image/heic':
-    case 'image/heif':
-      try {
-        return { buffer: await pipeline.heif({ quality: q, compression: 'av1' }).toBuffer(), mime: 'image/heic' };
-      } catch (err) {
-        // Fallback for standard HEIF / HEIC compilation differences
-        return { buffer: await pipeline.heif({ quality: q }).toBuffer(), mime: 'image/heic' };
-      }
-    case 'image/jxl':
-      return { buffer: await pipeline.jxl({ quality: q }).toBuffer(), mime: 'image/jxl' };
-    case 'image/svg+xml': {
-      const pngRes = await pipeline.png().toBuffer();
-      const base64 = pngRes.toString('base64');
-      const svgString = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
-  <image width="${width}" height="${height}" href="data:image/png;base64,${base64}"/>
-</svg>`;
-      return { buffer: Buffer.from(svgString), mime: 'image/svg+xml' };
-    }
     case 'image/jpeg':
     default:
       return { buffer: await pipeline.jpeg({ quality: q }).toBuffer(), mime: 'image/jpeg' };
@@ -92,12 +258,15 @@ async function processImage(buffer, params) {
 
 // Route to estimate output size
 app.post('/api/estimate', async (req, res) => {
-  if (!currentImageBuffer) {
+  const { id } = req.body;
+  const imageInfo = getImageFromCache(id);
+
+  if (!imageInfo || !imageInfo.buffer) {
     return res.status(400).json({ error: 'No image uploaded yet' });
   }
   
   try {
-    const result = await processImage(currentImageBuffer, req.body);
+    const result = await processImage(imageInfo.buffer, req.body);
     res.json({ success: true, size: result.buffer.length });
   } catch (err) {
     res.status(500).json({ error: `Formatting error: ${err.message}` });
@@ -106,12 +275,15 @@ app.post('/api/estimate', async (req, res) => {
 
 // Route to download processed image
 app.post('/api/download', async (req, res) => {
-  if (!currentImageBuffer) {
+  const { id } = req.body;
+  const imageInfo = getImageFromCache(id);
+
+  if (!imageInfo || !imageInfo.buffer) {
     return res.status(400).json({ error: 'No image uploaded yet' });
   }
   
   try {
-    const result = await processImage(currentImageBuffer, req.body);
+    const result = await processImage(imageInfo.buffer, req.body);
     res.setHeader('Content-Type', result.mime);
     res.send(result.buffer);
   } catch (err) {

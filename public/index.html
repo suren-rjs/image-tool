@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
+  <!-- JSZip CDN for bulk zip downloads -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
   <!-- Ambient background glow elements -->
@@ -36,7 +38,8 @@
     <main class="main-content" id="upload-stage">
       <div class="upload-card">
         <div class="drop-zone" id="drop-zone">
-          <input type="file" id="file-input" accept="image/*" class="file-input-hidden">
+          <input type="file" id="file-input" accept="image/*" class="file-input-hidden" multiple>
+          <input type="file" id="folder-input" webkitdirectory directory class="file-input-hidden">
           <div class="upload-icon-container">
             <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -44,13 +47,19 @@
               <line x1="12" y1="3" x2="12" y2="15"></line>
             </svg>
           </div>
-          <h2>Upload your image</h2>
-          <p class="upload-subtitle">Drag and drop your file here, or click to browse</p>
+          <h2>Compress & Optimize Images</h2>
+          <p class="upload-subtitle">Drag and drop your images or folders here, or browse:</p>
+          <div class="upload-buttons" style="margin-bottom: 1.5rem;">
+            <button class="btn btn-secondary" id="btn-browse-files">Browse Files</button>
+            <button class="btn btn-secondary" id="btn-browse-folder">Browse Folder</button>
+          </div>
           <div class="format-badges">
             <span class="badge">PNG</span>
             <span class="badge">JPEG</span>
             <span class="badge">WEBP</span>
             <span class="badge">GIF</span>
+            <span class="badge">AVIF</span>
+            <span class="badge">TIFF</span>
           </div>
         </div>
       </div>
@@ -172,6 +181,29 @@
           </div>
 
           <div class="sidebar-section">
+            <h3 class="section-title">Compression Mode</h3>
+            <div class="compression-mode-selector">
+              <label class="radio-label">
+                <input type="radio" name="single-compress-mode" id="single-mode-target" value="target" checked>
+                <span>Target Size (200KB)</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="single-compress-mode" id="single-mode-manual" value="manual">
+                <span>Manual Quality</span>
+              </label>
+            </div>
+
+            <!-- Target Size Section -->
+            <div class="slider-container" id="single-target-size-section">
+              <div class="input-group">
+                <span class="input-prefix">Target</span>
+                <input type="number" id="input-target-size" min="10" value="200">
+                <span class="input-suffix">KB</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="sidebar-section">
             <h3 class="section-title">Format & Quality</h3>
             <div class="format-selectors">
               <button class="format-btn active" data-format="image/jpeg">JPEG</button>
@@ -180,12 +212,9 @@
               <button class="format-btn" data-format="image/webp">WEBP</button>
               <button class="format-btn" data-format="image/avif">AVIF</button>
               <button class="format-btn" data-format="image/tiff">TIFF</button>
-              <button class="format-btn" data-format="image/svg+xml">SVG</button>
-              <button class="format-btn" data-format="image/heic">HEIC</button>
-              <button class="format-btn" data-format="image/jxl">JXL</button>
             </div>
             
-            <div class="slider-container" id="quality-section">
+            <div class="slider-container hidden" id="quality-section">
               <div class="slider-header">
                 <span class="slider-label">Compression Quality</span>
                 <span class="slider-value" id="quality-value">80%</span>
@@ -229,6 +258,137 @@
 
       </div>
     </main>
+
+    <!-- Bulk Processing Stage -->
+    <main class="main-content workspace-hidden" id="bulk-stage">
+      <div class="workspace-grid">
+        
+        <!-- Queue Table/List (Left) -->
+        <div class="viewport-card" style="height: calc(100vh - 180px); min-height: 500px;">
+          <div class="card-header">
+            <div class="card-title">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+              Bulk Compression Queue (<span id="bulk-queue-count">0</span> images)
+            </div>
+            <div class="header-actions">
+              <button class="btn btn-secondary btn-sm" id="btn-bulk-add-more">Add More</button>
+              <button class="btn btn-secondary btn-sm btn-danger-hover" id="btn-bulk-clear">Clear All</button>
+            </div>
+          </div>
+          
+          <div class="queue-list-container" id="queue-list-container">
+            <table class="queue-table">
+              <thead>
+                <tr>
+                  <th>Image</th>
+                  <th>Name</th>
+                  <th>Original Size</th>
+                  <th>Status</th>
+                  <th>Target / Output</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="queue-tbody">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Bulk Settings Sidebar (Right) -->
+        <aside class="sidebar-card">
+          <div class="sidebar-section">
+            <h3 class="section-title">Global Compression Target</h3>
+            <div class="compression-mode-selector">
+              <label class="radio-label">
+                <input type="radio" name="bulk-compress-mode" id="bulk-mode-target" value="target" checked>
+                <span>Target Size</span>
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="bulk-compress-mode" id="bulk-mode-manual" value="manual">
+                <span>Manual Quality</span>
+              </label>
+            </div>
+            
+            <!-- Target Size Inputs -->
+            <div class="slider-container" id="bulk-target-size-section">
+              <div class="input-group">
+                <span class="input-prefix">Target</span>
+                <input type="number" id="bulk-input-target-size" min="10" value="200">
+                <span class="input-suffix">KB</span>
+              </div>
+            </div>
+
+            <!-- Manual Quality Slider -->
+            <div class="slider-container hidden" id="bulk-quality-section">
+              <div class="slider-header">
+                <span class="slider-label">Quality</span>
+                <span class="slider-value" id="bulk-quality-value">80%</span>
+              </div>
+              <input type="range" id="bulk-input-quality" class="modern-slider" min="10" max="100" value="80">
+            </div>
+          </div>
+
+          <div class="sidebar-section">
+            <h3 class="section-title">Export Format</h3>
+            <div class="format-selectors" id="bulk-format-selectors">
+              <button class="format-btn active" data-format="original">Keep Original</button>
+              <button class="format-btn" data-format="image/jpeg">JPEG</button>
+              <button class="format-btn" data-format="image/png">PNG</button>
+              <button class="format-btn" data-format="image/gif">GIF</button>
+              <button class="format-btn" data-format="image/webp">WEBP</button>
+              <button class="format-btn" data-format="image/avif">AVIF</button>
+              <button class="format-btn" data-format="image/tiff">TIFF</button>
+            </div>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-title-row">
+              <h3 class="section-title">Global Resizing</h3>
+              <label class="toggle-switch">
+                <input type="checkbox" id="bulk-resize-toggle">
+                <span class="slider-toggle"></span>
+                <span class="toggle-label">Enable Resize</span>
+              </label>
+            </div>
+            <div class="dimension-inputs hidden" id="bulk-resize-dimensions">
+              <div class="input-group">
+                <span class="input-prefix">Max W</span>
+                <input type="number" id="bulk-input-max-width" min="1" value="1920">
+                <span class="input-suffix">px</span>
+              </div>
+              <div class="input-group">
+                <span class="input-prefix">Max H</span>
+                <input type="number" id="bulk-input-max-height" min="1" value="1080">
+                <span class="input-suffix">px</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Bulk Actions -->
+          <button class="btn btn-primary btn-glow" id="btn-bulk-compress">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="23 4 23 10 17 10"></polyline>
+              <polyline points="1 20 1 14 7 14"></polyline>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            </svg>
+            Compress All Images
+          </button>
+
+          <button class="btn btn-secondary" id="btn-bulk-download" disabled style="width: 100%;">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 8px;">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Download All as ZIP
+          </button>
+        </aside>
+      </div>
+    </main>
+
   </div>
 
   <script src="app.js"></script>

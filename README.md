@@ -62,7 +62,7 @@ image-tool/
 
 ## 3. Supported Formats & MIME Mappings
 
-OptiCrop supports 9 distinct export formats. Lossy formats support visual compression quality adjustment, while lossless/vector wrappers automatically hide quality options:
+OptiCrop supports 6 distinct export formats. Lossy formats support visual compression quality adjustment, while lossless wrappers automatically hide quality options:
 
 | Format Name | MIME Type | Quality Enabled | Output File Extension | Description |
 | :--- | :--- | :---: | :---: | :--- |
@@ -72,9 +72,6 @@ OptiCrop supports 9 distinct export formats. Lossy formats support visual compre
 | **WebP** | `image/webp` | Yes | `.webp` | High-efficiency modern web image. |
 | **AVIF** | `image/avif` | Yes | `.avif` | Ultra-high compression next-gen format. |
 | **TIFF** | `image/tiff` | Yes | `.tiff` | Uncompressed high-fidelity graphics. |
-| **SVG** | `image/svg+xml` | No | `.svg` | Vector wrapper encapsulating a lossless base64 raster block. |
-| **HEIC** | `image/heic` | Yes | `.heic` | High Efficiency Image Container. |
-| **JPEG XL** | `image/jxl` | Yes | `.jxl` | Next-generation rich quality format. |
 
 ---
 
