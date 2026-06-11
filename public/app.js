@@ -199,8 +199,17 @@ function handleFile(file) {
     },
     body: file
   })
-  .then(res => {
-    if (!res.ok) throw new Error('Failed to upload image to server cache.');
+  .then(async res => {
+    if (!res.ok) {
+      if (res.status === 413) {
+        throw new Error('Image is too large for the server (Vercel limits uploads to 4.5MB). Please use a smaller image or run the app locally.');
+      }
+      let errText = '';
+      try {
+        errText = await res.text();
+      } catch (e) {}
+      throw new Error(`Failed to upload image to server cache. Status: ${res.status} ${res.statusText}. ${errText}`);
+    }
     return res.json();
   })
   .then(data => {

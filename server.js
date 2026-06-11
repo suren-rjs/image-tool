@@ -328,24 +328,31 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, async () => {
-  const url = `http://localhost:${PORT}`;
-  
-  console.clear();
-  console.log('\x1b[36m%s\x1b[0m', '==================================================');
-  console.log('\x1b[35m%s\x1b[0m', '         ✦ ANTIGRAVITY IMAGE EDITOR STUDIO ✦       ');
-  console.log('\x1b[36m%s\x1b[0m', '==================================================');
-  console.log(`\x1b[32m✔ Server is running successfully.\x1b[0m`);
-  console.log(`\x1b[34mℹ Local URL:  \x1b[4m${url}\x1b[0m`);
-  console.log('\x1b[36m%s\x1b[0m', '==================================================');
-  console.log('\x1b[90m%s\x1b[0m', 'Opening web browser to localhost...');
+if (!process.env.VERCEL) {
+  app.listen(PORT, async () => {
+    const url = `http://localhost:${PORT}`;
+    
+    console.clear();
+    console.log('\x1b[36m%s\x1b[0m', '==================================================');
+    console.log('\x1b[35m%s\x1b[0m', '         ✦ ANTIGRAVITY IMAGE EDITOR STUDIO ✦       ');
+    console.log('\x1b[36m%s\x1b[0m', '==================================================');
+    console.log(`\x1b[32m✔ Server is running successfully.\x1b[0m`);
+    console.log(`\x1b[34mℹ Local URL:  \x1b[4m${url}\x1b[0m`);
+    console.log('\x1b[36m%s\x1b[0m', '==================================================');
+    const shouldOpen = process.env.NODE_ENV !== 'production' && !process.env.DISABLE_OPEN;
+    if (shouldOpen) {
+      try {
+        // Open in browser
+        await open(url);
+        console.log('\x1b[32m✔ Browser opened successfully!\x1b[0m');
+      } catch (error) {
+        console.error('\x1b[31m✘ Failed to open browser automatically:\x1b[0m', error.message);
+        console.log(`\x1b[33m⚡ Please manually open your browser and navigate to: ${url}\x1b[0m`);
+      }
+    } else {
+      console.log('\x1b[34mℹ Automatic browser opening is disabled in production/headless mode.\x1b[0m');
+    }
+  });
+}
 
-  try {
-    // Open in browser
-    await open(url);
-    console.log('\x1b[32m✔ Browser opened successfully!\x1b[0m');
-  } catch (error) {
-    console.error('\x1b[31m✘ Failed to open browser automatically:\x1b[0m', error.message);
-    console.log(`\x1b[33m⚡ Please manually open your browser and navigate to: ${url}\x1b[0m`);
-  }
-});
+export default app;
